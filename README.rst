@@ -26,6 +26,8 @@ Whilst in this repo you also need to set the following evironment variables:
 ``export LD_LIBRARY_PATH=$(pwd)/build/lib:$LD_LIBRARY_PATH``
 And from the parent directory of your LLVM clone:
 ``export PATH=$(pwd)/llvm-project/build/bin:$PATH``
+Also, you will need to set OP2_MLIR_DIR to point to your OP2-MLIR 
+directory.
 
 
 Examples
