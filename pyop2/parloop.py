@@ -19,7 +19,10 @@ from pyop2.local_kernel import LocalKernel, CStringLocalKernel, LoopyLocalKernel
 from pyop2.types import (Access, Global, AbstractDat, Dat, DatView, MixedDat, Mat, Set,
                          MixedSet, ExtrudedSet, Subset, Map, ComposedMap, MixedMap)
 from pyop2.types.data_carrier import DataCarrier
+from pyop2.utils import cached_property
+from pyop2.types import (READ, WRITE, RW, INC, MIN, MAX)
 
+import umesh_jit as umesh
 
 class ParloopArg(abc.ABC):
 
@@ -229,7 +232,105 @@ class Parloop:
         """
         with self._compute_event():
             PETSc.Log.logFlops(part.size*self.num_flops)
-            self.global_kernel(self.comm, part.offset, part.offset+part.size, *self.arglist)
+            # print("[UMesh Py] Part size:", part.size, ", Part offset:", part.offset)
+            if self.comm.size > 1:
+                # No MPI support for UMesh, so use normal PyOP2 execution:
+                print("[UMesh Py] Falling back to PyOP2 UMesh does not support MPI")
+                self.global_kernel(self.comm, part.offset, part.offset+part.size, *self.arglist)
+                return
+            # With 1 rank, owned_part is empty, so don't iterate over it, as UMesh will error
+            # if it gets given a parloop with a set size of 0
+            if part.size == 0:
+                return
+            try: 
+                self._umesh_compute()
+            except NotImplementedError as e:
+                print("[UMesh Py] Falling back to PyOP2, due to: ",e)
+                self.global_kernel(self.comm, part.offset, part.offset+part.size, *self.arglist)
+
+
+    def _umesh_compute(self):
+        # Overall goal: convert PyOP2 par loop arguments into those suitable for a UMesh
+        # par loop, then execute it using the UMesh JIT.
+
+        local_kern = self.global_kernel.local_kernel
+        # See if the local kernel is already C code, generate C code from the loopy kernel
+        # if not:
+        if isinstance(local_kern, CStringLocalKernel):
+            kernel_source = local_kern.code
+        elif isinstance(local_kern, LoopyLocalKernel):
+            kernel_source = lp.generate_code_v2(local_kern.code).device_code()
+        else:
+            raise NotImplementedError("[UMesh Py] Unsupported local kernel type: ", type(local_kern))
+        kernel_name = local_kern.name
+        set_size = self.iterset.size
+        set_name = self.iterset.name
+        # Print par loop info that is not related to the args:
+        # TODO: change this to only output for appropriate debug level
+        print("[UMesh Py] Kernel name: ",kernel_name, ", set size:", set_size, ", set name:", set_name)
+        print("[UMesh Py] Kernel source:\n", kernel_source)
+
+        # Now build UMesh args 
+        # TODO: add debug prints
+        umesh_args = []
+        for lk_arg, gk_arg, pl_arg in self.zipped_arguments:
+            if isinstance(pl_arg, DatParloopArg):
+                data = pl_arg.data
+                map_ = pl_arg.map_
+                access = lk_arg.access
+                dim = int(np.prod(data.dataset.dim))
+                type_str = self._numpy_dtype_to_umesh(data.dtype) # UMesh binding will convert the type
+                umesh_access = self._access_to_umesh(access)
+                array = data._data
+
+                if map_ is None: # Direct access
+                    umesh_args.append((array, None, -1, dim, type_str, umesh_access))
+                else: # Indirect access
+                    map_array = map_.values_with_halo.astype(np.int32)
+                    idx = data.index if isinstance(data, DatView) else 0
+                    umesh_args.append((array, map_array, idx, dim, type_str, umesh_access))
+            
+            elif isinstance(pl_arg, GlobalParloopArg):
+                data = pl_arg.data
+                access = lk_arg.access
+                dim = int(np.prod(data.dim))
+                type_str = self._numpy_dtype_to_umesh(data.dtype)
+                umesh_access = self._access_to_umesh(access)
+                array = data._data
+                # Global arguments are always for direct access:
+                umesh_args.append((array, None, -1, dim, type_str, umesh_access))
+            else:
+                raise NotImplementedError("[UMesh Py] Argument type", type(pl_arg).__name__, " unsupported")
+        umesh.par_loop(
+            kernel_source,
+            kernel_name,
+            set_size,
+            set_name,
+            umesh_args
+        )
+
+    def _access_to_umesh(self, access):
+        return {
+            READ:  umesh.READ,
+            WRITE: umesh.WRITE,
+            RW:    umesh.RW,
+            INC:   umesh.INC,
+            MIN:   umesh.MIN,
+            MAX:   umesh.MAX,
+        }[access]
+    
+    def _numpy_dtype_to_umesh(self, dtype):
+        dtype = np.dtype(dtype)  # normalise to np.dtype
+        if dtype == np.dtype('float64'):
+            return 'double'
+        elif dtype == np.dtype('float32'):
+            return 'float'
+        elif dtype == np.dtype('int32'):
+            return 'int32'
+        elif dtype == np.dtype('int64'):
+            return 'int64'
+        else:
+            raise NotImplementedError(f"Unsupported dtype for umesh: {dtype}")
 
     @cached_property
     def num_flops(self):
