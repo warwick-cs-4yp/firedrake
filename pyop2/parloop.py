@@ -234,8 +234,7 @@ class Parloop:
             # print("[UMesh Py] Part size:", part.size, ", Part offset:", part.offset)
             if self.comm.size > 1:
                 # No MPI support for UMesh, so use normal PyOP2 execution:
-                print("[UMesh Py] Falling back to PyOP2 UMesh does not support MPI")
-                self.global_kernel(self.comm, part.offset, part.offset+part.size, *self.arglist)
+                print("[UMesh Py] Can't execute kernel: UMesh does not support MPI")
                 return
             # With 1 rank, owned_part is empty, so don't iterate over it, as UMesh will error
             # if it gets given a parloop with a set size of 0
@@ -244,15 +243,15 @@ class Parloop:
             try: 
                 self._umesh_compute()
             except NotImplementedError as e:
-                print("[UMesh Py] Falling back to PyOP2, due to: ",e)
-                self.global_kernel(self.comm, part.offset, part.offset+part.size, *self.arglist)
-
+                print("[UMesh Py] Can't execute kernel:", e)
+                return
 
     def _umesh_compute(self):
         # Overall goal: convert PyOP2 par loop arguments into those suitable for a UMesh
         # par loop, then execute it using the UMesh JIT.
 
         local_kern = self.global_kernel.local_kernel
+        print("Extruded?", self.global_kernel._extruded)
         # See if the local kernel is already C code, generate C code from the loopy kernel
         # if not:
         if isinstance(local_kern, CStringLocalKernel):
@@ -277,22 +276,23 @@ class Parloop:
                 data = pl_arg.data
                 map_ = pl_arg.map_
                 access = lk_arg.access
-                dim = int(np.prod(data.dataset.dim))
+                dim = data.cdim
                 type_str = self._numpy_dtype_to_umesh(data.dtype) # UMesh binding will convert the type
                 umesh_access = self._access_to_umesh(access)
                 array = data._data
-
                 if map_ is None: # Direct access
                     umesh_args.append((array, None, -1, dim, type_str, umesh_access))
+                    print("[UMesh Py] Direct argument with dim:", dim, " type str:",type_str, " umesh access:", umesh_access)
                 else: # Indirect access
                     map_array = map_.values_with_halo.astype(np.int32)
                     idx = data.index if isinstance(data, DatView) else 0
+                    print("[UMesh Py] Indirect argument with idx: ", idx, " dim:", dim, " type str:",type_str, " umesh access:", umesh_access)
                     umesh_args.append((array, map_array, idx, dim, type_str, umesh_access))
             
             elif isinstance(pl_arg, GlobalParloopArg):
                 data = pl_arg.data
                 access = lk_arg.access
-                dim = int(np.prod(data.dim))
+                dim = data.shape[1] if data.ndim > 1 else 1
                 type_str = self._numpy_dtype_to_umesh(data.dtype)
                 umesh_access = self._access_to_umesh(access)
                 array = data._data
