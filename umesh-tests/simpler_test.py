@@ -19,5 +19,6 @@ coords = mesh.coordinates.dat.data
 cell_node_map = mesh.coordinates.function_space().cell_node_map().values
 cell_centres = np.mean(coords[cell_node_map], axis=1)
 exact = cell_centres[:, 0] + cell_centres[:, 1]
+print(f.dat.data)
 print(exact)
 print("Max error:", np.max(np.abs(f.dat.data - exact))) # Base PyOP2 result: very small (approx 4.44e-16)
