@@ -43,7 +43,7 @@ Current known issues
 =======
 These are in the process of being investigated and fixed:
 
-- Incorrect result from structured and unstructured mesh examples 
+- Incorrect result from simpler_example that seems to be related to fp rounding
 - Error with kernels that PyOP2 has given the same name
 - Need to change the code such that it does not fall back to PyOP2
 - Get to a point with one or two more impressive working examples, whilst not using 
