@@ -284,22 +284,31 @@ class Parloop:
                     umesh_args.append((array, None, -1, dim, type_str, umesh_access))
                     print("[UMesh Py] Direct argument with dim:", dim, " type str:",type_str, " umesh access:", umesh_access)
                 else: # Indirect access
-                    map_array = map_.values_with_halo.astype(np.int32)
-                    idx = data.index if isinstance(data, DatView) else 0
-                    print("[UMesh Py] Indirect argument with idx: ", idx, " dim:", dim, " type str:",type_str, " umesh access:", umesh_access)
-                    umesh_args.append((array, map_array, idx, dim, type_str, umesh_access))
+                    map_array = np.ascontiguousarray(map_.values_with_halo, dtype=np.int32) 
+                    if isinstance(local_kern, CStringLocalKernel):
+                        # OP2 convention: one argument per map column
+                        arity = map_.arity
+                        for idx in range(arity):
+                            umesh_args.append((array, map_array, idx, dim, type_str, umesh_access))
+                            print("[UMesh Py] Indirect argument with idx: ", idx, " dim:", dim, " type str:",type_str, " umesh access:", umesh_access)
+                    elif isinstance(local_kern, LoopyLocalKernel):
+                        raise NotImplementedError(
+                            "Indirect access with loopy/TSFC kernels requires gather/scatter "
+                            "support in the UMesh wrapper generator. Use CString kernels with "
+                            "explicit per-column arguments for indirect access.")
+
             
             elif isinstance(pl_arg, GlobalParloopArg):
                 data = pl_arg.data
                 access = lk_arg.access
-                dim = data.shape[1] if data.ndim > 1 else 1
+                dim = data.cdim
                 type_str = self._numpy_dtype_to_umesh(data.dtype)
                 umesh_access = self._access_to_umesh(access)
                 array = data._data
                 # Global arguments are always for direct access:
-                umesh_args.append((array, None, -1, dim, type_str, umesh_access))
+                umesh_args.append((array, None, -1, dim, type_str, umesh_access, "global")) # needs explicit marking
             else:
-                raise NotImplementedError("[UMesh Py] Argument type", type(pl_arg).__name__, " unsupported")
+                raise NotImplementedError(f"[UMesh Py] Argument type {type(pl_arg).__name__} unsupported")
         umesh.par_loop(
             kernel_source,
             kernel_name,
